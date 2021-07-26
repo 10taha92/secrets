@@ -1,176 +1,230 @@
+//jshint esversion:6
+
+//const bcrypt = require('bcrypt');
+//const md5 = require('md5');
+//const saltRounds = 10;
+//const encrypt = require("mongoose-encryption");
+//console.log(process.env.API_KEY);
 
 
-const express = require('express');
-const bodyparser = require('body-parser');
-const ejs = require('ejs');
-const date = require(__dirname+"/date.js");
-const daygen = require(__dirname+"/day.js");
-const _ = require('lodash');
-const https = require('https');
+require('dotenv').config();
+const express = require("express");
+const bodyParser = require("body-parser");
+const ejs = require("ejs");
+const mongoose = require("mongoose");
+const session = require('express-session');
+const passport = require("passport");
+const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require('mongoose-findorcreate');
+
 const app = express();
-app.use(bodyparser.urlencoded({extended: true}));
+
 app.use(express.static("public"));
-
-
 app.set('view engine', 'ejs');
+app.use(bodyParser.urlencoded({
+  extended: true
+}));
 
-//console.log(date());
-//console.log(daygen());
+app.use(session({
+  secret: "Our little secret.",
+  resave: false,
+  saveUninitialized: false
+}));
 
-// require mongoose package
-const mongoose = require('mongoose');
-var ObjectId = require('mongodb').ObjectID;
+app.use(passport.initialize());
+app.use(passport.session());
 
-// DB connection
-mongoose.connect("mongodb+srv://admin-taha:taha92basra@cluster0.5spjo.mongodb.net/todolistDB",{useNewUrlParser: true, useUnifiedTopology: true, useFindAndModify: false});
+mongoose.connect("mongodb://localhost:27017/userDB", {useNewUrlParser: true, useUnifiedTopology: true });
+mongoose.set("useCreateIndex", true);
 
-
-//mongoose schema
-const itemschema={
-  itemvalue: String
-};
-
-//mongoose model
-const item = mongoose.model("item",itemschema);
-
-// values in // db
-const item1 =new item({
-  itemvalue:"write in text boox"
-});
-const item2 =new item({
-  itemvalue:"hit the + button to add"
-});
-const item3 =new item({
-  itemvalue:"click checkbox to cut it down"
+const userSchema = new mongoose.Schema ({
+  email: String,
+  password: String,
+  googleId: String,
+  secret: String
 });
 
-//making an array of items
-const defaultitems =[item1,item2,item3];
+userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
+//const secret = process.env.SECRET;
+//userschema.plugin(encrypt,{secret: secret, encryptedFields: ["password"]});
+const User = new mongoose.model("User", userSchema);
 
-const listschema ={
-  name: String,
-  items: [itemschema]
-};
+passport.use(User.createStrategy());
 
-const list = mongoose.model("list",listschema);
+passport.serializeUser(function(user, done) {
+  done(null, user.id);
+});
 
-//reading data from database
+passport.deserializeUser(function(id, done) {
+  User.findById(id, function(err, user) {
+    done(err, user);
+  });
+});
 
-app.get("/",function (req,res) {
-  item.find({},function (err,founditems) {
-    if (founditems.length === 0) {
-      //query of inserting data using insertMany() fun
-      item.insertMany(defaultitems,function (err) {
-        if(err)
-        {
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    console.log(profile);
 
-          console.log("err");
-        }
-        else {
-          console.log("success");
-        }
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
 
+app.get("/", function(req, res){
+  res.render("home");
+});
+
+app.get("/auth/google",
+  passport.authenticate('google', { scope: ["profile"] })
+);
+
+app.get("/auth/google/secrets",
+  passport.authenticate('google', { failureRedirect: "/login" }),
+  function(req, res) {
+    // Successful authentication, redirect to secrets.
+    res.redirect("/secrets");
+  });
+
+app.get("/login", function(req, res){
+  res.render("login");
+});
+
+app.get("/register", function(req, res){
+  res.render("register");
+});
+
+app.get("/secrets", function(req, res){
+  User.find({"secret": {$ne: null}}, function(err, foundUsers){
+    if (err){
+      console.log(err);
+    } else {
+      if (foundUsers) {
+        res.render("secrets", {usersWithSecrets: foundUsers});
+      }
+    }
+  });
+});
+
+app.get("/submit", function(req, res){
+  if (req.isAuthenticated()){
+    res.render("submit");
+  } else {
+    res.redirect("/login");
+  }
+});
+
+app.post("/submit", function(req, res){
+  const submittedSecret = req.body.secret;
+
+//Once the user is authenticated and their session gets saved, their user details are saved to req.user.
+  // console.log(req.user.id);
+
+  User.findById(req.user.id, function(err, foundUser){
+    if (err) {
+      console.log(err);
+    } else {
+      if (foundUser) {
+        foundUser.secret = submittedSecret;
+        foundUser.save(function(){
+          res.redirect("/secrets");
+        });
+      }
+    }
+  });
+});
+
+app.get("/logout", function(req, res){
+  req.logout();
+  res.redirect("/");
+});
+
+app.post("/register", function(req, res){
+
+  User.register({username: req.body.username}, req.body.password, function(err, user){
+    if (err) {
+      console.log(err);
+      res.redirect("/register");
+    } else {
+      passport.authenticate("local")(req, res, function(){
+        res.redirect("/secrets");
       });
     }
-    else{
-      res.render("list",{listtitle: daygen(),ls: founditems});
-      //console.log(founditems);
-    }
-  });
-});
-
-app.get("/:customlistname",function (req,res) {
-  const customlistname = _.capitalize(req.params.customlistname);
-  list.findOne({name: customlistname},function (err,foundlist) {
-    if(!err){
-      if(!foundlist){
-        //create a new list
-        const listc = new list({
-          name: customlistname,
-          items:defaultitems
-        });
-        listc.save();
-        res.redirect("/"+customlistname);
-      }
-      else{
-        //show an existing list
-        res.render("list",{listtitle: foundlist.name,ls:foundlist.items});
-      }
-    }
   });
 
-});
-
-app.post("/",function (req,res) {
-  const x= req.body.nm;
-  const listname = req.body.list;
-    const itemx =new item({
-      itemvalue: x
-    });
-    if (x!="") {
-      if(listname ==="today")
-      {
-        itemx.save();
-        res.redirect("/");
-      }
-      else
-      {
-          list.findOne({name: listname},function (err,foundlist) {
-              foundlist.items.push(itemx);
-              foundlist.save();
-              res.redirect("/"+listname);
-          });
-      }
-
-    }
-    else {
-      console.log("empty string");
-    }
+  //console.log(req.body.username);
+    //console.log(req.body.password);
+    // bcrypt.hash(req.body.password,saltRounds,function(err,hash){
+    //   const newUser = new User({
+    //     email: req.body.username,
+    //     password: hash
+    //   });
+    //   newUser.save(function (err) {
+    //     if (err) {
+    //       console.log("error");
+    //     }
+    //     else {
+    //     res.render("secrets");
+    //     }
+    //   });
+    // });
 
 });
 
-app.post("/delete",function (req,res) {
-  const checkeditemid = req.body.checkbox;
-  //console.log(checkeditemid);
-  const listname =req.body.listname;
-if (listname === "today") {
-  item.findByIdAndRemove(checkeditemid, function (err) {
+app.post("/login", function(req, res){
+
+  const user = new User({
+    username: req.body.username,
+    password: req.body.password
+  });
+
+  req.login(user, function(err){
     if (err) {
-
       console.log(err);
-    }
-    else {
-      console.log("success");
-      res.redirect("/");
+    } else {
+      passport.authenticate("local")(req, res, function(){
+        res.redirect("/secrets");
+      });
     }
   });
-}
-else {
-  list.findOneAndUpdate({name:listname},{$pull:{items:{_id: checkeditemid}}},function (err,founlist) {
-      if (err) {
-        console.log("error");
-      }
-      else {
-        res.redirect("/"+listname);
-      }
-  });
-}
+
+  // const username = req.body.username;
+    // const password = req.body.password;
+    // console.log(password);
+    // User.findOne({email: username},function (err,foundusers) {
+    //   if(err)
+    //   {
+    //     console.log("error not found");
+    //   }
+    //   else {
+    //     if(foundusers)
+    //     {
+    //         bcrypt.compare(password, foundusers.password, function (err,results) {
+    //             if(results === true){
+    //               res.render("secrets");
+    //             }
+    //         });
+    //
+    //
+    //     }
+    //   }
+    // });
 
 });
 
-let port =process.env.Port;
-if(port == null || port ==""){
-  port = 3000'
-}
 
 
-app.listen(port,function () {
-  console.log("server running successfully");
+
+
+
+
+app.listen(3000, function() {
+  console.log("Server started on port 3000.");
 });
-
-
-
-
-// app.get("/work",function (req,res) {
-//   res.render("list",{listtitle: "worklist",ls: workitems});
-// });
